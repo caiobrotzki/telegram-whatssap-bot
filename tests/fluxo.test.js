@@ -13,6 +13,7 @@ function cenario(opcoes = {}) {
   const chamadas = { ocr: 0, alertas: [] };
   const processar = criarProcessador({
     idGrupo: '123@g.us', historico,
+    baixarImagem: mensagem => mensagem.downloadMedia(),
     encontrarCodigosNaImagem: async () => { chamadas.ocr++; return opcoes.codigos ?? ['ABCD1234EFGH']; },
     enviarAlerta: async codigos => { if (opcoes.falhar) throw new Error('API indisponível'); chamadas.alertas.push(codigos); },
     registrar: (h, id, codigos = []) => { h.ids.add(id); codigos.forEach(c => h.codigos.add(c)); }
@@ -50,4 +51,28 @@ test('histórico persiste, recarrega e limita 1000 itens', t => {
 test('histórico corrompido não é apagado silenciosamente', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'psn-test-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const arquivo = path.join(dir, 'historico.json'); fs.writeFileSync(arquivo, 'invalido'); assert.throws(() => carregarHistorico(arquivo));
+});
+
+test('normaliza ID $1 antes do download e preserva deduplicação', async () => {
+  const c = cenario();
+  const mensagem = { ...c.mensagem, id: { $1: 'novo-id' }, async downloadMedia() {
+    assert.equal(this.id._serialized, 'novo-id');
+    return { mimetype: 'image/png', data: Buffer.from('imagem').toString('base64') };
+  } };
+  await c.processar(mensagem);
+  await c.processar(mensagem);
+  assert.equal(c.chamadas.ocr, 1);
+  assert.ok(c.historico.ids.has('novo-id'));
+  assert.ok(!c.historico.ids.has(undefined));
+});
+test('ID ausente impede download e registro de undefined', async () => {
+  const c = cenario();
+  await assert.rejects(c.processar({ ...c.mensagem, id: {}, downloadMedia: async () => assert.fail('não deveria baixar') }), /sem ID/);
+  assert.equal(c.historico.ids.size, 0);
+});
+test('falha de download identifica a etapa e não registra a mensagem', async () => {
+  const c = cenario();
+  await assert.rejects(c.processar({ ...c.mensagem, downloadMedia: async () => { throw new Error('r'); } }), /Falha ao baixar imagem do WhatsApp: r/);
+  assert.equal(c.historico.ids.size, 0);
+  assert.equal(c.chamadas.ocr, 0);
 });

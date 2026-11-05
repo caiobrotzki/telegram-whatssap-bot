@@ -23,7 +23,15 @@ if (!listarGrupos) {
 }
 
 const historico = listarGrupos ? null : carregarHistorico();
-const cliente = new Client({ authStrategy: new LocalAuth() });
+const cliente = new Client({
+  authStrategy: new LocalAuth(),
+  puppeteer: {
+    headless: true,
+    // Tempo por chamada ao navegador, diferente do tempo para abrir o Chrome.
+    protocolTimeout: 600_000,
+    timeout: 60_000
+  }
+});
 let fila = Promise.resolve();
 let encerrando = false;
 
@@ -34,20 +42,22 @@ cliente.on('qr', qr => {
 
 cliente.on('auth_failure', erro => console.error('Falha na autenticação do WhatsApp:', erro));
 cliente.on('disconnected', motivo => console.warn('WhatsApp desconectado:', motivo));
+cliente.on('loading_screen', percentual => console.log(`Carregando WhatsApp Web: ${percentual}%`));
+cliente.on('authenticated', () => console.log('Sessão autenticada. Aguardando o WhatsApp terminar de carregar...'));
 
 cliente.on('ready', async () => {
   console.log('WhatsApp conectado!');
 
   if (listarGrupos) {
     try {
-      const chats = await cliente.getChats();
-      const grupos = chats.filter(chat => chat.isGroup);
+      const grupos = await require('./grupos').listarGrupos(cliente);
       if (!grupos.length) console.log('Nenhum grupo encontrado na lista de conversas carregadas.');
       for (const grupo of grupos) {
         console.log(`${grupo.name}\n  ID: ${grupo.id._serialized}`);
       }
     } catch (erro) {
-      console.error('Erro ao listar grupos:', erro.message);
+      console.error('Erro ao listar grupos:', erro.stack || String(erro));
+      process.exitCode = 1;
     } finally {
       await cliente.destroy();
     }
@@ -84,7 +94,16 @@ async function encerrar() {
 process.once('SIGINT', encerrar);
 process.once('SIGTERM', encerrar);
 
-cliente.initialize().catch(erro => {
+console.log('Iniciando WhatsApp Web... Aguarde a confirmação de conexão.');
+cliente.initialize().catch(async erro => {
+  encerrando = true;
   console.error('Não foi possível iniciar WhatsApp Web:', erro.message);
   process.exitCode = 1;
+  console.error('Feche esta execução antes de tentar novamente. Não execute duas instâncias do bot.');
+  // Fecha somente o navegador deste cliente, preservando a sessão salva.
+  try {
+    await cliente.destroy();
+  } catch (erroFechamento) {
+    console.error('Erro ao fechar o navegador do bot:', erroFechamento.message);
+  }
 });

@@ -1,16 +1,26 @@
 'use strict';
 
-function criarProcessador({ idGrupo, historico, encontrarCodigosNaImagem, enviarAlerta, registrar }) {
+function criarProcessador({ idGrupo, historico, encontrarCodigosNaImagem, enviarAlerta, registrar, baixarImagem = require('./midia').baixarImagem }) {
   return async function processarMensagem(mensagem) {
 
     // Não analisa mensagens de texto, vídeos nem imagens de outros grupos.
     if ((mensagem.fromMe ? mensagem.to : mensagem.from) !== idGrupo || mensagem.type !== 'image' || !mensagem.hasMedia) return;
 
-    const idMensagem = mensagem.id._serialized;
+    // Algumas versões do WhatsApp Web usam $1; downloadMedia ainda lê _serialized.
+    const idMensagem = mensagem.id?._serialized || mensagem.id?.$1;
+    if (typeof idMensagem !== 'string' || !idMensagem.trim()) {
+      throw new Error('Imagem sem ID reconhecido; download não iniciado.');
+    }
+    mensagem.id._serialized = idMensagem;
     if (historico.ids.has(idMensagem)) return;
 
-    console.log('Nova imagem do grupo monitorado. Executando OCR...');
-    const midia = await mensagem.downloadMedia();
+    console.log('Nova imagem do grupo monitorado. Baixando imagem...');
+    let midia;
+    try {
+      midia = await baixarImagem(mensagem);
+    } catch (erro) {
+      throw new Error(`Falha ao baixar imagem do WhatsApp: ${erro.message || String(erro)}`, { cause: erro });
+    }
     if (!midia || !midia.mimetype?.startsWith('image/')) {
       console.log('Imagem indisponível para download.');
       return;
@@ -23,6 +33,7 @@ function criarProcessador({ idGrupo, historico, encontrarCodigosNaImagem, enviar
       return;
     }
 
+    console.log('Imagem baixada. Executando OCR...');
     const encontrados = await encontrarCodigosNaImagem(buffer);
     const novos = encontrados.filter(codigo => !historico.codigos.has(codigo));
 
